@@ -5,31 +5,54 @@ import plotly.express as px
 
 st.set_page_config(page_title="Ringostat RevOps Dashboard", layout="wide")
 
+# ── Color palette ──────────────────────────────────────────────────────────────
+
+COLOR_PRIMARY = "#4F46E5"   # indigo
+COLOR_WON     = "#10B981"   # green
+COLOR_LOST    = "#EF4444"   # red
+COLOR_NEUTRAL = "#6B7280"   # gray
+
+STAGE_COLORS = {
+    "Closed Won":    "#10B981",
+    "Closed Lost":   "#EF4444",
+    "Negotiations":  "#F59E0B",
+    "Project set up":"#3B82F6",
+    "Trial":         "#8B5CF6",
+    "Payment":       "#06B6D4",
+    "Missing stage": "#D1D5DB",
+}
+
+CHART_LAYOUT = dict(
+    plot_bgcolor="rgba(0,0,0,0)",
+    paper_bgcolor="rgba(0,0,0,0)",
+    margin=dict(l=0, r=40, t=40, b=0),
+    yaxis=dict(showgrid=False),
+    xaxis=dict(showgrid=False),
+)
+
+BUDGET_ORDER = ["0-500", "500-1000", "1000-2000", "2000-5000",
+                "5000-10000", "20000+", "Unknown"]
+
 # ── Load & clean ──────────────────────────────────────────────────────────────
 
 @st.cache_data
 def load_data():
-    df = pd.read_excel("data/deals.xlsx", sheet_name="база угод")
+    raw = pd.read_excel("data/deals.xlsx", sheet_name="база угод")
 
-    # Parse dates
-    df["AQL date"] = pd.to_datetime(df["AQL date"], format="mixed", errors="coerce")
-    df["Closing Date"] = pd.to_datetime(df["Closing Date"], format="mixed", errors="coerce")
-
-    # Normalize PPC budget
-    budget_order = ["0-500", "500-1000", "1000-2000", "2000-5000",
-                    "5000-10000", "20000+", "Unknown"]
+    raw["AQL date"]     = pd.to_datetime(raw["AQL date"],     format="mixed", errors="coerce")
+    raw["Closing Date"] = pd.to_datetime(raw["Closing Date"], format="mixed", errors="coerce")
 
     def normalize_budget(val):
         if pd.isna(val):
             return "Unknown"
         if isinstance(val, (int, float)):
             return "0-500"
-        return str(val).strip() if str(val).strip() in budget_order else "Unknown"
+        return str(val).strip() if str(val).strip() in BUDGET_ORDER else "Unknown"
 
-    df["PPC budget USD"] = df["PPC budget USD"].apply(normalize_budget)
-    df["PPC budget USD"] = pd.Categorical(df["PPC budget USD"], categories=budget_order, ordered=True)
-
-    return df
+    raw["PPC budget USD"] = raw["PPC budget USD"].apply(normalize_budget)
+    raw["PPC budget USD"] = pd.Categorical(raw["PPC budget USD"],
+                                           categories=BUDGET_ORDER, ordered=True)
+    return raw
 
 df = load_data()
 
@@ -37,25 +60,53 @@ df = load_data()
 
 st.sidebar.header("Filters")
 
-all_countries = sorted(df["Client country"].dropna().unique().tolist())
-sel_countries = st.sidebar.multiselect("Client country", all_countries, default=all_countries)
-
-all_crms = sorted(df["Client CRM"].dropna().unique().tolist())
-sel_crms = st.sidebar.multiselect("Client CRM", all_crms, default=all_crms)
-
+# 1. Date range — first
 min_date = df["AQL date"].min().date()
 max_date = df["AQL date"].max().date()
-start_date = st.sidebar.date_input("Start date", value=min_date, min_value=min_date, max_value=max_date)
-end_date   = st.sidebar.date_input("End date",   value=max_date, min_value=min_date, max_value=max_date)
+start_date = st.sidebar.date_input("Start date", value=min_date,
+                                   min_value=min_date, max_value=max_date)
+end_date   = st.sidebar.date_input("End date",   value=max_date,
+                                   min_value=min_date, max_value=max_date)
 
-# Apply filters
-mask = (
-    df["Client country"].isin(sel_countries) &
-    df["Client CRM"].isin(sel_crms) &
+if start_date > end_date:
+    st.warning("Start date must be before End date.")
+    st.stop()
+
+# 2. Client country — single selectbox with "All"
+all_countries = sorted(df["Client country"].dropna().unique().tolist())
+sel_country = st.sidebar.selectbox("Client country", ["All"] + all_countries)
+
+# 3. Client CRM — selectbox with "All"
+all_crms = sorted(df["Client CRM"].dropna().unique().tolist())
+sel_crm = st.sidebar.selectbox("Client CRM", ["All"] + all_crms)
+
+# Build filter masks
+date_mask = (
     (df["AQL date"].dt.date >= start_date) &
     (df["AQL date"].dt.date <= end_date)
 )
-fdf = df[mask].copy()
+
+if sel_country == "All":
+    country_mask = pd.Series(True, index=df.index)
+else:
+    country_mask = df["Client country"] == sel_country
+
+if sel_crm == "All":
+    crm_mask = pd.Series(True, index=df.index)
+else:
+    crm_mask = df["Client CRM"] == sel_crm
+
+filtered_df = df[date_mask & country_mask & crm_mask].copy()
+
+# Sidebar info
+st.sidebar.divider()
+st.sidebar.caption(f"Showing {len(filtered_df)} of {len(df)} deals")
+
+# ── Empty filter guard ────────────────────────────────────────────────────────
+
+if filtered_df.empty:
+    st.warning("No deals match the selected filters. Adjust filters in the sidebar.")
+    st.stop()
 
 # ── Helper ────────────────────────────────────────────────────────────────────
 
@@ -69,197 +120,302 @@ def win_rate(sub: pd.DataFrame) -> float:
 
 st.title("Ringostat RevOps Dashboard")
 
-total       = len(fdf)
-won         = fdf[fdf["Stage"] == "Closed Won"].shape[0]
-lost        = fdf[fdf["Stage"] == "Closed Lost"].shape[0]
-wr          = win_rate(fdf)
+total = len(filtered_df)
+won   = filtered_df[filtered_df["Stage"] == "Closed Won"].shape[0]
+lost  = filtered_df[filtered_df["Stage"] == "Closed Lost"].shape[0]
+wr    = win_rate(filtered_df)
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Total Deals", total)
 c2.metric("Win Rate %", f"{wr:.1f}%" if not pd.isna(wr) else "N/A")
-c3.metric("Closed Won", won)
+c3.metric("Closed Won",  won)
 c4.metric("Closed Lost", lost)
 
 st.divider()
 
-# ── Charts ────────────────────────────────────────────────────────────────────
+# ── Row 1: Win Rate by Country | Win Rate by CRM ──────────────────────────────
 
 col_left, col_right = st.columns(2)
+
+closed_df = filtered_df[filtered_df["Stage"].isin(["Closed Won", "Closed Lost"])]
 
 # 1. Win Rate by Country
 with col_left:
     st.subheader("Win Rate by Country")
-    closed_df = fdf[fdf["Stage"].isin(["Closed Won", "Closed Lost"])]
-    country_stats = (
-        closed_df.groupby("Client country")
-        .apply(lambda g: pd.Series({
-            "closed": len(g),
-            "win_rate": round(g[g["Stage"] == "Closed Won"].shape[0] / len(g) * 100, 1)
-        }))
-        .reset_index()
-    )
-    country_stats = country_stats[country_stats["closed"] >= 5].sort_values("win_rate", ascending=True)
+    if len(closed_df) > 0:
+        country_stats = closed_df.groupby("Client country", as_index=False).agg(
+            closed=("Stage", "count"),
+            won=("Stage", lambda x: (x == "Closed Won").sum()),
+        )
+        country_stats["win_rate"] = round(country_stats["won"] / country_stats["closed"] * 100, 1)
+        country_stats = (
+            country_stats[country_stats["closed"] >= 5]
+            .sort_values("win_rate", ascending=True)
+        )
+    else:
+        country_stats = pd.DataFrame(columns=["Client country", "closed", "won", "win_rate"])
+
     if not country_stats.empty:
-        fig = px.bar(country_stats, x="win_rate", y="Client country", orientation="h",
-                     labels={"win_rate": "Win Rate %", "Client country": "Country"},
-                     text="win_rate")
-        fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-        st.plotly_chart(fig, use_container_width=True)
+        fig1 = px.bar(
+            country_stats, x="win_rate", y="Client country", orientation="h",
+            labels={"win_rate": "Win Rate %", "Client country": "Country"},
+            text="win_rate",
+            color_discrete_sequence=[COLOR_PRIMARY],
+        )
+        fig1.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+        fig1.update_layout(**CHART_LAYOUT)
+        st.plotly_chart(fig1, use_container_width=True)
     else:
         st.info("Not enough data (need ≥ 5 closed deals per country).")
 
 # 2. Win Rate by CRM
 with col_right:
     st.subheader("Win Rate by CRM")
-    crm_stats = (
-        closed_df.groupby("Client CRM")
-        .apply(lambda g: pd.Series({
-            "closed": len(g),
-            "win_rate": round(g[g["Stage"] == "Closed Won"].shape[0] / len(g) * 100, 1)
-        }))
-        .reset_index()
-    )
-    crm_stats = crm_stats[crm_stats["closed"] >= 5].sort_values("win_rate", ascending=True)
+    if len(closed_df) > 0:
+        crm_stats = closed_df.groupby("Client CRM", as_index=False).agg(
+            closed=("Stage", "count"),
+            won=("Stage", lambda x: (x == "Closed Won").sum()),
+        )
+        crm_stats["win_rate"] = round(crm_stats["won"] / crm_stats["closed"] * 100, 1)
+        crm_stats = (
+            crm_stats[crm_stats["closed"] >= 5]
+            .sort_values("win_rate", ascending=True)
+        )
+    else:
+        crm_stats = pd.DataFrame(columns=["Client CRM", "closed", "won", "win_rate"])
+
     if not crm_stats.empty:
-        fig2 = px.bar(crm_stats, x="win_rate", y="Client CRM", orientation="h",
-                      labels={"win_rate": "Win Rate %", "Client CRM": "CRM"},
-                      text="win_rate")
+        fig2 = px.bar(
+            crm_stats, x="win_rate", y="Client CRM", orientation="h",
+            labels={"win_rate": "Win Rate %", "Client CRM": "CRM"},
+            text="win_rate",
+            color_discrete_sequence=[COLOR_PRIMARY],
+        )
         fig2.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+        fig2.update_layout(**CHART_LAYOUT)
         st.plotly_chart(fig2, use_container_width=True)
     else:
         st.info("Not enough data (need ≥ 5 closed deals per CRM).")
+
+st.divider()
+
+# ── Row 2: Deal Distribution by Stage | Deals by Source ───────────────────────
 
 col_left2, col_right2 = st.columns(2)
 
 # 3. Deal Distribution by Stage
 with col_left2:
     st.subheader("Deal Distribution by Stage")
-    stage_data = fdf["Stage"].fillna("Missing stage").value_counts().reset_index()
+    stage_col = filtered_df["Stage"].fillna("Missing stage").replace("", "Missing stage")
+    stage_data = stage_col.value_counts().reset_index()
     stage_data.columns = ["Stage", "Count"]
-    fig3 = px.pie(stage_data, names="Stage", values="Count")
+    fig3 = px.pie(
+        stage_data, names="Stage", values="Count",
+        color="Stage",
+        color_discrete_map=STAGE_COLORS,
+    )
     st.plotly_chart(fig3, use_container_width=True)
 
 # 4. Deals by Source
 with col_right2:
     st.subheader("Deals by Source")
-    source_data = fdf["Source"].dropna().value_counts().reset_index()
+    source_data = filtered_df["Source"].dropna().value_counts().reset_index()
     source_data.columns = ["Source", "Count"]
     source_data = source_data.sort_values("Count", ascending=True)
-    fig4 = px.bar(source_data, x="Count", y="Source", orientation="h",
-                  labels={"Count": "Number of Deals"},
-                  text="Count")
+    fig4 = px.bar(
+        source_data, x="Count", y="Source", orientation="h",
+        labels={"Count": "Number of Deals"},
+        text="Count",
+        color_discrete_sequence=[COLOR_PRIMARY],
+    )
     fig4.update_traces(textposition="outside")
+    fig4.update_layout(**CHART_LAYOUT)
     st.plotly_chart(fig4, use_container_width=True)
-
-# 5. Win Rate by PPC Budget
-st.subheader("Win Rate by PPC Budget")
-budget_stats = (
-    closed_df.groupby("PPC budget USD", observed=True)
-    .apply(lambda g: round(g[g["Stage"] == "Closed Won"].shape[0] / len(g) * 100, 1))
-    .reset_index()
-)
-budget_stats.columns = ["PPC budget USD", "Win Rate %"]
-fig5 = px.bar(budget_stats, x="PPC budget USD", y="Win Rate %",
-              text="Win Rate %")
-fig5.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-st.plotly_chart(fig5, use_container_width=True)
 
 st.divider()
 
-# ── Data Quality Issues ───────────────────────────────────────────────────────
+# ── Row 3: Win Rate by PPC Budget (full width) ────────────────────────────────
 
-st.subheader("Data Quality Issues")
+st.subheader("Win Rate by PPC Budget")
 
-issues = []
+if len(closed_df) > 0:
+    ppc_stats = closed_df.groupby("PPC budget USD", observed=False, as_index=False).agg(
+        total_closed=("Stage", "count"),
+        won=("Stage", lambda x: (x == "Closed Won").sum()),
+    )
+    ppc_stats["Win Rate %"] = round(ppc_stats["won"] / ppc_stats["total_closed"] * 100, 1)
+    ppc_stats["PPC budget USD"] = ppc_stats["PPC budget USD"].astype(str)
+    # Filter out ranges with 0 closed deals
+    ppc_stats = ppc_stats[ppc_stats["total_closed"] > 0]
+    ppc_stats["PPC budget USD"] = pd.Categorical(
+        ppc_stats["PPC budget USD"], categories=BUDGET_ORDER, ordered=True
+    )
+    ppc_stats = ppc_stats.sort_values("PPC budget USD")
 
-for idx, row in fdf.iterrows():
-    excel_row = idx + 2  # 1-based header + 1
+    fig5 = px.bar(
+        ppc_stats, x="PPC budget USD", y="Win Rate %",
+        text="Win Rate %",
+        color_discrete_sequence=[COLOR_PRIMARY],
+    )
+    fig5.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+    fig5.update_layout(**CHART_LAYOUT)
+    fig5.update_xaxes(type="category", showgrid=False)
+    fig5.update_yaxes(showgrid=False)
+    st.plotly_chart(fig5, use_container_width=True)
+    st.caption("Only budget ranges with ≥1 closed deal are shown.")
+else:
+    st.info("No closed deals to calculate PPC budget win rates.")
 
-    if row["Stage"] in ("Closed Won", "Closed Lost") and pd.isna(row["Closing Date"]):
-        issues.append({**row, "Excel row": excel_row, "Issue": "Closed stage but no Closing Date"})
+# ── Row 4: Data Quality Issues (full width) ───────────────────────────────────
 
-    if pd.isna(row["Stage"]) or row["Stage"] is None:
-        issues.append({**row, "Excel row": excel_row, "Issue": "Missing Stage"})
+st.divider()
+st.header("Data Quality Issues")
 
-    if pd.isna(row["Client country"]) or row["Client country"] is None:
-        issues.append({**row, "Excel row": excel_row, "Issue": "Missing Client country"})
+issues_list = []
 
-    if pd.isna(row["Source"]) or row["Source"] is None:
-        issues.append({**row, "Excel row": excel_row, "Issue": "Missing Source"})
+# 1. Missing Stage
+mask1 = df["Stage"].isna() | (df["Stage"] == "")
+if mask1.any():
+    temp = df.loc[mask1].copy()
+    temp["Issue"] = "Missing Stage"
+    issues_list.append(temp)
 
-    if pd.isna(row["AQL date"]):
-        issues.append({**row, "Excel row": excel_row, "Issue": "Unparseable AQL date"})
+# 2. Closed deal without Closing Date
+mask2 = df["Stage"].isin(["Closed Won", "Closed Lost"]) & (df["Closing Date"].isna())
+if mask2.any():
+    temp = df.loc[mask2].copy()
+    temp["Issue"] = "Closed deal missing Closing Date"
+    issues_list.append(temp)
 
-if issues:
-    issues_df = pd.DataFrame(issues)[
-        ["Excel row", "AQL date", "Source", "Client country", "Stage", "Closing Date", "Issue"]
-    ]
-    st.dataframe(issues_df, use_container_width=True)
-    st.caption(f"Total issues: {len(issues_df)}")
+# 3. Missing Client country
+mask3 = df["Client country"].isna() | (df["Client country"] == "")
+if mask3.any():
+    temp = df.loc[mask3].copy()
+    temp["Issue"] = "Missing Client country"
+    issues_list.append(temp)
+
+# 4. Missing Source
+mask4 = df["Source"].isna() | (df["Source"] == "")
+if mask4.any():
+    temp = df.loc[mask4].copy()
+    temp["Issue"] = "Missing Source"
+    issues_list.append(temp)
+
+# 5. Unparseable AQL date
+mask5 = df["AQL date"].isna()
+if mask5.any():
+    temp = df.loc[mask5].copy()
+    temp["Issue"] = "Invalid or missing AQL date"
+    issues_list.append(temp)
+
+if issues_list:
+    issues_df = pd.concat(issues_list, ignore_index=True)
+    show_cols = ["AQL date", "Source", "Client country", "Stage",
+                 "Closing Date", "Issue"]
+    show_cols = [c for c in show_cols if c in issues_df.columns]
+    st.dataframe(issues_df[show_cols], use_container_width=True, hide_index=True)
+    st.caption(f"Total: {len(issues_df)} issues across {issues_df['Issue'].nunique()} categories")
 else:
     st.success("No data quality issues found.")
 
+# ── Row 5: RevOps Insights Summary (full width) ───────────────────────────────
+
 st.divider()
+st.header("RevOps Insights Summary")
 
-# ── RevOps Insights Summary ───────────────────────────────────────────────────
+closed_deals = filtered_df[filtered_df["Stage"].isin(["Closed Won", "Closed Lost"])]
 
-st.subheader("RevOps Insights Summary")
-
-benchmark = 25.0
-
-# Recalculate on filtered data
-total_wr = win_rate(fdf)
-
-# Top/worst countries (>=5 closed deals)
-if not country_stats.empty:
-    sorted_countries = country_stats.sort_values("win_rate", ascending=False)
-    top3    = sorted_countries.head(3)[["Client country", "win_rate"]].values.tolist()
-    worst3  = sorted_countries.tail(3)[["Client country", "win_rate"]].values.tolist()
-    top3_str    = ", ".join(f"{c} ({w:.1f}%)" for c, w in top3)
-    worst3_str  = ", ".join(f"{c} ({w:.1f}%)" for c, w in worst3)
+if len(closed_deals) == 0:
+    st.warning("Not enough closed deals to generate insights.")
 else:
-    top3_str = worst3_str = "Not enough data"
+    ins_won = len(closed_deals[closed_deals["Stage"] == "Closed Won"])
+    ins_lost = len(closed_deals[closed_deals["Stage"] == "Closed Lost"])
+    ins_wr = ins_won / (ins_won + ins_lost) * 100
 
-# Best source by win rate (>=5 closed deals)
-source_wr = (
-    closed_df.groupby("Source")
-    .apply(lambda g: pd.Series({"closed": len(g),
-                                "wr": round(g[g["Stage"] == "Closed Won"].shape[0] / len(g) * 100, 1)}))
-    .reset_index()
-)
-source_wr = source_wr[source_wr["closed"] >= 5].sort_values("wr", ascending=False)
-best_source = f"{source_wr.iloc[0]['Source']} ({source_wr.iloc[0]['wr']:.1f}%)" if not source_wr.empty else "N/A"
+    # Country analysis (>= 5 closed deals)
+    country_wr = closed_deals.groupby("Client country", as_index=False).agg(
+        won=("Stage", lambda x: (x == "Closed Won").sum()),
+        total=("Stage", "count"),
+    )
+    country_wr["win_rate"] = country_wr["won"] / country_wr["total"] * 100
+    country_wr = country_wr[country_wr["total"] >= 5].sort_values("win_rate", ascending=False)
 
-# No CRM share and win rate
-no_crm_df   = fdf[fdf["Client CRM"] == "No CRM"]
-no_crm_pct  = round(len(no_crm_df) / total * 100, 1) if total > 0 else 0
-no_crm_wr   = win_rate(no_crm_df)
+    # CRM: No CRM analysis
+    no_crm = closed_deals[closed_deals["Client CRM"] == "No CRM"]
+    no_crm_pct = len(filtered_df[filtered_df["Client CRM"] == "No CRM"]) / len(filtered_df) * 100
+    no_crm_wr = (len(no_crm[no_crm["Stage"] == "Closed Won"]) / len(no_crm) * 100) if len(no_crm) > 0 else 0
 
-# Data quality count
-dq_count = len(issues)
+    # Source analysis
+    source_counts = filtered_df["Source"].value_counts()
+    source_wr = closed_deals.groupby("Source", as_index=False).agg(
+        won=("Stage", lambda x: (x == "Closed Won").sum()),
+        total=("Stage", "count"),
+    )
+    source_wr["win_rate"] = source_wr["won"] / source_wr["total"] * 100
+    source_wr = source_wr[source_wr["total"] >= 3].sort_values("win_rate", ascending=False)
 
-# Most frequent loss reason
-loss_reasons = fdf[
-    (fdf["Stage"] == "Closed Lost") &
-    fdf["Loss reason description"].notna()
-]["Loss reason description"]
-top_loss = loss_reasons.value_counts().idxmax() if not loss_reasons.empty else "N/A"
-top_loss_count = int(loss_reasons.value_counts().max()) if not loss_reasons.empty else 0
+    # Loss reasons
+    loss_reasons = closed_deals[closed_deals["Stage"] == "Closed Lost"]["Loss reason description"].dropna()
+    loss_reasons = loss_reasons[loss_reasons != ""]
 
-# Compare win rate to benchmark
-wr_vs_bench = (
-    f"**above** benchmark ({total_wr:.1f}% vs {benchmark}%)" if total_wr >= benchmark
-    else f"**below** benchmark ({total_wr:.1f}% vs {benchmark}%)"
-)
+    # Data quality count (from original df)
+    quality_count = sum([
+        df["Stage"].isna().sum(),
+        (df["Stage"].isin(["Closed Won", "Closed Lost"]) & df["Closing Date"].isna()).sum(),
+        df["Client country"].isna().sum(),
+        df["Source"].isna().sum(),
+    ])
 
-insights_md = f"""
-- **Overall win rate:** {total_wr:.1f}% — {wr_vs_bench} (SaaS average).
-- **Top-3 countries by win rate** (≥ 5 closed deals): {top3_str}.
-- **Worst-3 countries by win rate**: {worst3_str}.
-- **Best-performing source:** {best_source}.
-- **Deals without CRM ("No CRM"):** {no_crm_pct:.1f}% of total; win rate {no_crm_wr:.1f}% vs overall {total_wr:.1f}%.
-- **Data quality issues found:** {dq_count}.
-- **Most frequent loss reason:** "{top_loss}" ({top_loss_count} deals).
-"""
+    # Build summary points
+    points = []
 
-st.info(insights_md)
+    points.append(
+        f"**Overall win rate is {ins_wr:.1f}%** — out of {ins_won + ins_lost} closed deals, "
+        f"{ins_won} were won and {ins_lost} lost."
+    )
+
+    if len(country_wr) >= 2:
+        best = country_wr.iloc[0]
+        worst = country_wr.iloc[-1]
+        points.append(
+            f"**Best-performing market: {best['Client country']}** "
+            f"({best['win_rate']:.0f}% win rate, {int(best['total'])} closed deals). "
+            f"**Weakest: {worst['Client country']}** ({worst['win_rate']:.0f}%) — "
+            f"review whether ICP and sales approach fit this market."
+        )
+
+    points.append(
+        f"**{no_crm_pct:.0f}% of all deals have no CRM.** "
+        f"Their win rate ({no_crm_wr:.1f}%) is "
+        f"{'lower' if no_crm_wr < ins_wr else 'higher'} than average ({ins_wr:.1f}%). "
+        f"Requiring CRM info during qualification could improve tracking and conversion."
+    )
+
+    if len(source_wr) >= 1:
+        top_vol = source_counts.index[0]
+        top_vol_count = source_counts.iloc[0]
+        best_src = source_wr.iloc[0]
+        points.append(
+            f"**{top_vol}** brings the most deals ({top_vol_count}), "
+            f"but **{best_src['Source']}** has the highest win rate "
+            f"({best_src['win_rate']:.0f}%). "
+            f"Consider investing more in high-converting sources."
+        )
+
+    if len(loss_reasons) > 0:
+        top_reason = loss_reasons.value_counts().index[0]
+        top_reason_count = loss_reasons.value_counts().iloc[0]
+        points.append(
+            f"**Top loss reason: \"{top_reason}\"** ({top_reason_count} deals). "
+            f"This points to a competitive positioning challenge — "
+            f"review pricing, feature differentiation, and objection handling."
+        )
+
+    points.append(
+        f"**{quality_count} data quality issues detected** in the dataset. "
+        f"Missing Stage values and incomplete closing dates hurt pipeline accuracy. "
+        f"Enforce mandatory fields in CRM to improve data reliability."
+    )
+
+    summary_md = "\n\n".join([f"• {p}" for p in points])
+    st.markdown(summary_md)

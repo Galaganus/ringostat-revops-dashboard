@@ -1,0 +1,246 @@
+Прочитай app.py полностью. В нём есть 6 конкретных проблем, которые 
+я перечислю ниже. Исправь КАЖДУЮ. После исправлений запусти проверку 
+синтаксиса: python -c "import ast; ast.parse(open('app.py').read()); print('OK')"
+
+== ПРОБЛЕМА 1: reset_index() ValueError ==
+
+В коде есть места где вызывается .groupby("Column").agg(...).reset_index().
+Это падает с "ValueError: cannot insert Column, already exists" 
+когда результат пустой или колонка уже в columns.
+
+ДЕЙСТВИЕ: Найди ВСЕ вызовы .groupby(...).agg(...).reset_index() 
+и .groupby(...).size().reset_index() в файле.
+Замени каждый на .groupby(..., as_index=False).agg(...) 
+или .groupby(..., as_index=False).size().
+
+Также: в самом начале основной логики (после загрузки данных и фильтров), 
+добавь проверку:
+
+    if filtered_df.empty:
+        st.warning("No deals match the selected filters. Adjust filters in the sidebar.")
+        st.stop()
+
+== ПРОБЛЕМА 2: Data Quality Issues — показывает 0 issues ==
+
+Текущий код ищет issues в filtered_df. Это неправильно — quality checks 
+должны работать на ОРИГИНАЛЬНОМ df (до фильтров), потому что проблемы 
+с данными не зависят от фильтров.
+
+ДЕЙСТВИЕ: Найди секцию Data Quality Issues. Замени её ЦЕЛИКОМ на этот код:
+
+    st.divider()
+    st.header("Data Quality Issues")
+    
+    issues_list = []
+    
+    # 1. Missing Stage (строки где Stage is NaN или None)
+    mask1 = df["Stage"].isna() | (df["Stage"] == "")
+    if mask1.any():
+        temp = df.loc[mask1].copy()
+        temp["Issue"] = "Missing Stage"
+        issues_list.append(temp)
+    
+    # 2. Closed deal without Closing Date
+    mask2 = df["Stage"].isin(["Closed Won", "Closed Lost"]) & (df["Closing Date"].isna())
+    if mask2.any():
+        temp = df.loc[mask2].copy()
+        temp["Issue"] = "Closed deal missing Closing Date"
+        issues_list.append(temp)
+    
+    # 3. Missing Client country
+    mask3 = df["Client country"].isna() | (df["Client country"] == "")
+    if mask3.any():
+        temp = df.loc[mask3].copy()
+        temp["Issue"] = "Missing Client country"
+        issues_list.append(temp)
+    
+    # 4. Missing Source
+    mask4 = df["Source"].isna() | (df["Source"] == "")
+    if mask4.any():
+        temp = df.loc[mask4].copy()
+        temp["Issue"] = "Missing Source"
+        issues_list.append(temp)
+    
+    # 5. Unparseable AQL date
+    mask5 = df["AQL date"].isna()
+    if mask5.any():
+        temp = df.loc[mask5].copy()
+        temp["Issue"] = "Invalid or missing AQL date"
+        issues_list.append(temp)
+    
+    if issues_list:
+        issues_df = pd.concat(issues_list, ignore_index=True)
+        show_cols = ["AQL date", "Source", "Client country", "Stage", 
+                     "Closing Date", "Issue"]
+        show_cols = [c for c in show_cols if c in issues_df.columns]
+        st.dataframe(issues_df[show_cols], use_container_width=True, hide_index=True)
+        st.caption(f"Total: {len(issues_df)} issues across {issues_df['Issue'].nunique()} categories")
+    else:
+        st.success("No data quality issues found.")
+
+ВАЖНО: переменная df должна быть оригинальным DataFrame ДО фильтрации.
+Проверь что в коде df не перезаписывается фильтрами. 
+Если сейчас df перезаписывается — переименуй: 
+оригинал пусть будет raw_df, отфильтрованный — filtered_df,
+и в секции Data Quality Issues используй raw_df.
+
+== ПРОБЛЕМА 3: Pie chart не показывает "Missing stage" ==
+
+ДЕЙСТВИЕ: Найди секцию где строится pie chart Deal Distribution by Stage.
+Прямо перед построением графика добавь:
+
+    stage_col = filtered_df["Stage"].fillna("Missing stage").replace("", "Missing stage")
+
+И используй stage_col вместо filtered_df["Stage"] при подсчёте.
+
+Также проверь color_discrete_map. Он ДОЛЖЕН содержать ключ "Missing stage":
+
+    stage_colors = {
+        "Closed Won": "#10B981",
+        "Closed Lost": "#EF4444",
+        "Negotiations": "#F59E0B",
+        "Project set up": "#3B82F6",
+        "Trial": "#8B5CF6",
+        "Payment": "#06B6D4",
+        "Missing stage": "#D1D5DB",
+    }
+
+== ПРОБЛЕМА 4: PPC chart показывает пустые диапазоны с 0% ==
+
+Диапазоны без закрытых сделок отображаются как 0%. Это некорректно — 
+0% означает "все проиграли", а тут просто нет данных.
+
+ДЕЙСТВИЕ: В секции PPC Budget, после расчёта win rate по диапазонам, 
+отфильтруй строки где общее количество закрытых сделок == 0:
+
+    # После группировки по PPC budget
+    ppc_stats = ppc_stats[ppc_stats["total_closed"] > 0]
+
+Где total_closed — это столбец с суммой (Closed Won + Closed Lost) в каждом диапазоне.
+Добавь под графиком: st.caption("Only budget ranges with ≥1 closed deal are shown.")
+
+== ПРОБЛЕМА 5: Убрать лишние элементы ==
+
+ДЕЙСТВИЕ 1: Удали selectbox "Compare with country" и всю логику сравнения. 
+Должен остаться только один selectbox для Client country с вариантами 
+["All"] + sorted list.
+
+ДЕЙСТВИЕ 2: Удали ВСЁ упоминание "benchmark", "SaaS average", "25%" из кода. 
+Никаких бенчмарков — только фактические данные.
+
+Win Rate метрика должна быть просто:
+    st.metric("Win Rate %", f"{win_rate:.1f}%")
+Без delta, без benchmark.
+
+== ПРОБЛЕМА 6: RevOps Insights Summary — переписать полностью ==
+
+Текущий summary — список фактов без выводов. 
+Замени секцию RevOps Insights Summary ЦЕЛИКОМ на:
+
+    st.divider()
+    st.header("RevOps Insights Summary")
+    
+    # Calculate all values from filtered data
+    closed_deals = filtered_df[filtered_df["Stage"].isin(["Closed Won", "Closed Lost"])]
+    
+    if len(closed_deals) == 0:
+        st.warning("Not enough closed deals to generate insights.")
+    else:
+        won = len(closed_deals[closed_deals["Stage"] == "Closed Won"])
+        lost = len(closed_deals[closed_deals["Stage"] == "Closed Lost"])
+        wr = won / (won + lost) * 100
+        
+        # Country analysis (>= 5 closed deals)
+        country_wr = closed_deals.groupby("Client country", as_index=False).agg(
+            won=("Stage", lambda x: (x == "Closed Won").sum()),
+            total=("Stage", "count")
+        )
+        country_wr["win_rate"] = country_wr["won"] / country_wr["total"] * 100
+        country_wr = country_wr[country_wr["total"] >= 5].sort_values("win_rate", ascending=False)
+        
+        # CRM: No CRM analysis
+        no_crm = closed_deals[closed_deals["Client CRM"] == "No CRM"]
+        no_crm_pct = len(filtered_df[filtered_df["Client CRM"] == "No CRM"]) / len(filtered_df) * 100
+        no_crm_wr = (len(no_crm[no_crm["Stage"] == "Closed Won"]) / len(no_crm) * 100) if len(no_crm) > 0 else 0
+        
+        # Source analysis
+        source_counts = filtered_df["Source"].value_counts()
+        source_wr = closed_deals.groupby("Source", as_index=False).agg(
+            won=("Stage", lambda x: (x == "Closed Won").sum()),
+            total=("Stage", "count")
+        )
+        source_wr["win_rate"] = source_wr["won"] / source_wr["total"] * 100
+        source_wr = source_wr[source_wr["total"] >= 3].sort_values("win_rate", ascending=False)
+        
+        # Loss reasons
+        loss_reasons = closed_deals[closed_deals["Stage"] == "Closed Lost"]["Loss reason description"].dropna()
+        loss_reasons = loss_reasons[loss_reasons != ""]
+        
+        # Data quality count (from original df)
+        quality_count = sum([
+            df["Stage"].isna().sum(),
+            (df["Stage"].isin(["Closed Won", "Closed Lost"]) & df["Closing Date"].isna()).sum(),
+            df["Client country"].isna().sum(),
+            df["Source"].isna().sum(),
+        ])
+        
+        # Build summary points
+        points = []
+        
+        points.append(
+            f"**Overall win rate is {wr:.1f}%** — out of {won + lost} closed deals, "
+            f"{won} were won and {lost} lost."
+        )
+        
+        if len(country_wr) >= 2:
+            best = country_wr.iloc[0]
+            worst = country_wr.iloc[-1]
+            points.append(
+                f"**Best-performing market: {best['Client country']}** "
+                f"({best['win_rate']:.0f}% win rate, {int(best['total'])} closed deals). "
+                f"**Weakest: {worst['Client country']}** ({worst['win_rate']:.0f}%) — "
+                f"review whether ICP and sales approach fit this market."
+            )
+        
+        points.append(
+            f"**{no_crm_pct:.0f}% of all deals have no CRM.** "
+            f"Their win rate ({no_crm_wr:.1f}%) is "
+            f"{'lower' if no_crm_wr < wr else 'higher'} than average ({wr:.1f}%). "
+            f"Requiring CRM info during qualification could improve tracking and conversion."
+        )
+        
+        if len(source_wr) >= 1:
+            top_vol = source_counts.index[0]
+            top_vol_count = source_counts.iloc[0]
+            best_src = source_wr.iloc[0]
+            points.append(
+                f"**{top_vol}** brings the most deals ({top_vol_count}), "
+                f"but **{best_src['Source']}** has the highest win rate "
+                f"({best_src['win_rate']:.0f}%). "
+                f"Consider investing more in high-converting sources."
+            )
+        
+        if len(loss_reasons) > 0:
+            top_reason = loss_reasons.value_counts().index[0]
+            top_reason_count = loss_reasons.value_counts().iloc[0]
+            points.append(
+                f"**Top loss reason: \"{top_reason}\"** ({top_reason_count} deals). "
+                f"This points to a competitive positioning challenge — "
+                f"review pricing, feature differentiation, and objection handling."
+            )
+        
+        points.append(
+            f"**{quality_count} data quality issues detected** in the dataset. "
+            f"Missing Stage values and incomplete closing dates hurt pipeline accuracy. "
+            f"Enforce mandatory fields in CRM to improve data reliability."
+        )
+        
+        summary_md = "\n\n".join([f"• {p}" for p in points])
+        st.markdown(summary_md)
+
+== ФИНАЛ ==
+
+После всех правок выполни:
+    python -c "import ast; ast.parse(open('app.py').read()); print('OK')"
+
+Если ошибка — исправь синтаксис.
