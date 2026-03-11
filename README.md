@@ -70,7 +70,6 @@ ringostat-revops-dashboard/
 ├── requirements.txt        # Python dependencies
 ├── data/
 │   └── deals.xlsx          # Source data (test dataset from Ringostat)
-├── PROJECT_DESCRIPTION.md  # Detailed project documentation & prompt history
 └── README.md
 ```
 
