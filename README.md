@@ -47,7 +47,7 @@ Runs on the **full unfiltered dataset**. Only flags objectively verifiable error
 **Requirements:** Python 3.10+
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/Galaganus/ringostat-revops-dashboard.git
 cd ringostat-revops-dashboard
 
 python -m venv .venv
