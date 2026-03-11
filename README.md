@@ -4,7 +4,7 @@ An interactive Streamlit dashboard for analyzing deal pipeline performance, iden
 
 ## Live Demo
 
-> Link to deployed dashboard will be added here.
+> https://ringostat-revops-dashboard-2qcz6mcfkmzm8ohj2sflrp.streamlit.app/
 
 ## Features
 
